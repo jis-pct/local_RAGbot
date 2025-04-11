@@ -1,0 +1,5 @@
+.venv
+embedding_model
+src/__pycache__
+uploaded_files
+.env
