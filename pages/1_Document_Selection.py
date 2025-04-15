@@ -1,9 +1,9 @@
 import streamlit as st
 import os
-import time
 from PyPDF2 import PdfReader
+from streamlit_autorefresh import st_autorefresh
 
-from src.opensearch import get_opensearch_client, create_index, delete_documents, index_documents, chunk_text, save_uploaded_file, generate_embeddings, get_embedding_model
+from src.opensearch import get_opensearch_client, create_index, save_uploaded_file, get_embedding_model
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -26,6 +26,8 @@ with st.spinner("Connecting to OpenSearch..."):
     client = get_opensearch_client()
 index_name = os.environ['OPENSEARCH_INDEX']
 create_index(client)
+
+st_autorefresh(interval=2000, key="auto_rerun")
 
 # Initialize or clear the documents list in session state
 st.session_state["documents"] = []
@@ -74,31 +76,6 @@ if uploaded_files:
                 continue
 
             file_path = save_uploaded_file(uploaded_file)
-            reader = PdfReader(file_path)
-            text = "".join([page.extract_text() for page in reader.pages])
-            chunks = chunk_text(text, chunk_size=os.environ['TEXT_CHUNK_SIZE'], overlap=os.environ['OVERLAP'])
-            embeddings = generate_embeddings(chunks)
-
-            documents_to_index = [
-                {
-                    "doc_id": f"{uploaded_file.name}_{i}",
-                    "text": chunk,
-                    "embedding": embedding,
-                    "document_name": uploaded_file.name,
-                }
-                for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
-            ]
-            index_documents(documents_to_index)
-            st.session_state["documents"].append(
-                {
-                    "filename": uploaded_file.name,
-                    "content": text,
-                    "file_path": file_path,
-                }
-            )
-            document_names.append(uploaded_file.name)
-
-    st.success("Files uploaded and indexed successfully!")
 
 if st.session_state["documents"]:
     st.markdown("### Uploaded Documents")
@@ -123,8 +100,3 @@ if st.session_state["documents"]:
                             st.error(
                                 f"File '{doc['filename']}' not found in filesystem."
                             )
-                    delete_documents(doc["filename"])
-                    st.session_state["documents"].pop(idx - 1)
-                    st.session_state["deleted_file"] = doc["filename"]
-                    time.sleep(0.5)
-                    st.rerun()

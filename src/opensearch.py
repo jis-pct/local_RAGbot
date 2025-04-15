@@ -4,12 +4,16 @@ from sentence_transformers import SentenceTransformer
 import os
 import numpy as np
 from dotenv import load_dotenv
-import streamlit as st
 import re
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import time
+from PyPDF2 import PdfReader
+import functools
 
 load_dotenv()
 
-@st.cache_resource()
+@functools.cache
 def get_opensearch_client() -> OpenSearch:
     client = OpenSearch(
         hosts=[{"host": os.environ['OPENSEARCH_HOST'], "port": os.environ['OPENSEARCH_PORT']}],
@@ -20,20 +24,11 @@ def get_opensearch_client() -> OpenSearch:
     )
     return client
 
-@st.cache_resource()
+@functools.cache
 def get_embedding_model() -> SentenceTransformer:
     return SentenceTransformer(os.environ['EMBEDDING_MODEL_PATH'])
 
 def generate_embeddings(chunks: list) -> list:
-    """
-    Generates embeddings for a list of text chunks.
-
-    Args:
-        chunks (List[str]): List of text chunks.
-
-    Returns:
-        List[np.ndarray[Any, Any]]: List of embeddings as numpy arrays for each chunk.
-    """
     model = get_embedding_model()
     embeddings = [np.array(model.encode(chunk)) for chunk in chunks]
     return embeddings
@@ -66,12 +61,11 @@ def hybrid_search(
     )
 
     # Type casting for compatibility with expected return type
-    # hits: List[Dict[str, Any]] = response["hits"]["hits"]
     hits = response["hits"]["hits"]
     return hits
 
 # Index functions
-@st.cache_resource()
+@functools.cache
 def load_index_config() -> dict:
     with open("src/index_config.json", "r") as f:
         config = json.load(f)
@@ -84,18 +78,6 @@ def create_index(client: OpenSearch) -> None:
     index = os.environ['OPENSEARCH_INDEX']
     if not client.indices.exists(index=index):
         client.indices.create(index=index, body=index_body)
-
-def delete_index(client: OpenSearch) -> None:
-    """
-    Deletes the index in OpenSearch if it exists.
-
-    Args:
-        client (OpenSearch): OpenSearch client instance.
-    """
-    if client.indices.exists(index=os.environ['OPENSEARCH_INDEX']):
-        client.indices.delete(index=os.environ['OPENSEARCH_INDEX'])
-    else:
-        print(f"Index {os.environ['OPENSEARCH_INDEX']} does not exist.")
 
 def index_documents(documents: list) -> tuple:
     actions = []
@@ -202,3 +184,51 @@ def save_uploaded_file(uploaded_file) -> str:  # type: ignore
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     return file_path
+
+def chunk_and_index_files(file_path: str):
+    filename = os.path.basename(file_path)
+    reader = PdfReader(file_path)
+    text = "".join([page.extract_text() for page in reader.pages])
+    chunks = chunk_text(text, chunk_size=os.environ['TEXT_CHUNK_SIZE'], overlap=os.environ['OVERLAP'])
+    embeddings = generate_embeddings(chunks)
+
+    documents_to_index = [
+        {
+            "doc_id": f"{filename}_{i}",
+            "text": chunk,
+            "embedding": embedding,
+            "document_name": filename,
+        }
+        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+    ]
+    index_documents(documents_to_index)
+    return filename
+
+class DocumentHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        if event.src_path.endswith(('.pdf')):
+            print(f"[+] New file detected: {event.src_path}")
+            time.sleep(0.1)
+            chunk_and_index_files(event.src_path)
+
+    def on_deleted(self, event):
+        if event.is_directory:
+            return
+        print(f"[-] File deleted: {event.src_path}")
+        time.sleep(0.1)
+        delete_documents(os.path.basename(event.src_path))
+
+def start_watching(directory: str):
+    observer = Observer()
+    handler = DocumentHandler()
+    observer.schedule(handler, directory, recursive=False)
+    observer.start()
+    print(f"👀 Watching: {directory}")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
