@@ -1,6 +1,6 @@
 A local RAG LLM (Ollama) using OpenSearch. Run using streamlit. Supports parameter modification and custom system messages.
 
-Requires Docker and Ollama to be installed.
+Requires Docker and Ollama to be installed. Download an embedding model of your choice into `embedding_model` e.g. sentence-transformers/all-mpnet-base-v2
 
 Run `python monitor_files.py` to start a background script that watches for changes in UPLOAD_DIR (can be modified in .env) and automatically indexes and removes files
 
